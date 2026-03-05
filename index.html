@@ -65,7 +65,7 @@
     .tile:active { cursor: grabbing; }
     .tile.dragging { opacity: 0.7; pointer-events: none; }
     .pool .tile { position: absolute; }
-    .pool-inner { position: relative; width: 336px; height: 336px; background: #0f172a; border-radius: 8px; padding: 4px; }
+    .pool-inner { position: relative; background: #0f172a; border-radius: 8px; padding: 4px; }
     .pool-inner.drag-over { outline: 2px solid #22c55e; outline-offset: 2px; }
     #reveal-message {
       display: none;
@@ -109,8 +109,9 @@
 
   <script src="config.js"></script>
   <script>
+    const GRID_SIZE_USE = typeof GRID_SIZE !== 'undefined' ? GRID_SIZE : 4;
     const TILE_SIZE = 80;
-    const totalPieces = GRID_SIZE * GRID_SIZE;
+    const totalPieces = GRID_SIZE_USE * GRID_SIZE_USE;
 
     let imageEl = null;
     let slotContents = []; // index -> piece index or -1
@@ -132,7 +133,7 @@
     }
 
     function rowCol(index) {
-      return { row: Math.floor(index / GRID_SIZE), col: index % GRID_SIZE };
+      return { row: Math.floor(index / GRID_SIZE_USE), col: index % GRID_SIZE_USE };
     }
 
     function createTileEl(pieceIndex) {
@@ -141,6 +142,7 @@
       div.className = 'tile';
       div.dataset.pieceIndex = String(pieceIndex);
       div.style.backgroundImage = imageEl ? `url(${imageEl.src})` : 'none';
+      div.style.backgroundSize = (GRID_SIZE_USE * 100) + '% ' + (GRID_SIZE_USE * 100) + '%';
       div.style.backgroundPosition = `${-col * 100}% ${-row * 100}%`;
       div.style.width = TILE_SIZE + 'px';
       div.style.height = TILE_SIZE + 'px';
@@ -149,8 +151,10 @@
 
     function renderTargetGrid() {
       targetGrid.innerHTML = '';
-      targetGrid.style.width = (GRID_SIZE * TILE_SIZE + 8 + 8) + 'px';
-      targetGrid.style.height = (GRID_SIZE * TILE_SIZE + 8 + 8) + 'px';
+      targetGrid.style.width = (GRID_SIZE_USE * TILE_SIZE + 8 + 8) + 'px';
+      targetGrid.style.height = (GRID_SIZE_USE * TILE_SIZE + 8 + 8) + 'px';
+      targetGrid.style.gridTemplateColumns = `repeat(${GRID_SIZE_USE}, 1fr)`;
+      targetGrid.style.gridTemplateRows = `repeat(${GRID_SIZE_USE}, 1fr)`;
       for (let i = 0; i < totalPieces; i++) {
         const slot = document.createElement('div');
         slot.className = 'slot';
@@ -167,7 +171,10 @@
 
     function renderPool() {
       poolEl.innerHTML = '';
-      const cols = GRID_SIZE;
+      const cols = GRID_SIZE_USE;
+      const poolSize = cols * (TILE_SIZE + 4) + 4;
+      poolEl.style.width = poolSize + 'px';
+      poolEl.style.height = poolSize + 'px';
       poolPieces.forEach((pieceIndex, i) => {
         const tile = createTileEl(pieceIndex);
         tile.dataset.inPool = '1';
@@ -185,12 +192,34 @@
         slot.addEventListener('dragover', onDragOver);
         slot.addEventListener('drop', onDropSlot);
         slot.addEventListener('dragleave', onDragLeave);
+        // Let child tiles also receive drop (so dropping on a filled slot works)
+        slot.querySelectorAll('.tile').forEach(tile => {
+          tile.addEventListener('dragover', onDragOverSlot);
+          tile.addEventListener('drop', onDropSlotFromTile);
+          tile.addEventListener('dragleave', (e) => {
+            const slot = e.currentTarget.closest('.slot');
+            if (slot && !slot.contains(e.relatedTarget)) slot.classList.remove('drag-over');
+          });
+        });
       });
-      targetGrid.querySelectorAll('.tile').forEach(tile => {
+      targetGrid.querySelectorAll('.slot .tile').forEach(tile => {
         tile.setAttribute('draggable', 'true');
         tile.addEventListener('dragstart', onDragStartTile);
         tile.addEventListener('dragend', onDragEnd);
       });
+    }
+
+    function onDragOverSlot(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const slot = e.currentTarget.closest('.slot');
+      if (slot) slot.classList.add('drag-over');
+    }
+    function onDropSlotFromTile(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const slot = e.currentTarget.closest('.slot');
+      if (slot) applyDropToSlot(slot);
     }
 
     function attachPoolListeners() {
@@ -206,13 +235,13 @@
       e.currentTarget.classList.add('drag-over');
     }
     function onDragLeave(e) {
-      e.currentTarget.classList.remove('drag-over');
+      const el = e.currentTarget;
+      if (!el.contains(e.relatedTarget)) el.classList.remove('drag-over');
     }
 
-    function onDropSlot(e) {
-      e.preventDefault();
-      e.currentTarget.classList.remove('drag-over');
-      const slotIndex = parseInt(e.currentTarget.dataset.slotIndex, 10);
+    function applyDropToSlot(slotEl) {
+      slotEl.classList.remove('drag-over');
+      const slotIndex = parseInt(slotEl.dataset.slotIndex, 10);
       if (draggedPiece === null) return;
       if (draggedSlotIndex !== null) {
         const prev = slotContents[slotIndex];
@@ -226,6 +255,11 @@
       poolEl.classList.remove('drag-over');
       render();
       checkComplete();
+    }
+
+    function onDropSlot(e) {
+      e.preventDefault();
+      applyDropToSlot(e.currentTarget);
     }
 
     function onDropPool(e) {
@@ -286,7 +320,7 @@
         if (slotContents[i] !== i) return;
       }
       revealEl.classList.add('visible');
-      revealEl.querySelector('.message-text').textContent = REVEAL_MESSAGE;
+      revealEl.querySelector('.message-text').textContent = typeof REVEAL_MESSAGE !== 'undefined' ? REVEAL_MESSAGE : 'Puzzle complete!';
     }
 
     function init() {
@@ -304,7 +338,7 @@
       imageEl.onerror = () => {
         poolEl.innerHTML = '<p style="color:#f87171;">Failed to load image. Use a different URL or same-origin image.</p>';
       };
-      imageEl.src = PUZZLE_IMAGE;
+      imageEl.src = typeof PUZZLE_IMAGE !== 'undefined' ? PUZZLE_IMAGE : '';
     }
 
     init();

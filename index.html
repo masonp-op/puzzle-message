@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Puzzle Reveal</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem;
+    }
+    h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 600; }
+    .game {
+      display: flex;
+      gap: 2rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .section {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 1rem;
+    }
+    .section h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #94a3b8;
+    }
+    .grid {
+      display: grid;
+      gap: 2px;
+      background: #0f172a;
+      padding: 4px;
+      border-radius: 8px;
+    }
+    .grid.grid-4 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); }
+    .slot, .tile {
+      width: 80px;
+      height: 80px;
+      border-radius: 4px;
+      position: relative;
+    }
+    .slot {
+      background: #0f172a;
+      border: 2px dashed #334155;
+      min-width: 80px;
+      min-height: 80px;
+    }
+    .slot.drag-over { border-color: #22c55e; background: rgba(34, 197, 94, 0.15); }
+    .tile {
+      background-size: 400% 400%;
+      cursor: grab;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .tile:active { cursor: grabbing; }
+    .tile.dragging { opacity: 0.7; pointer-events: none; }
+    .pool .tile { position: absolute; }
+    .pool-inner { position: relative; width: 336px; height: 336px; background: #0f172a; border-radius: 8px; padding: 4px; }
+    .pool-inner.drag-over { outline: 2px solid #22c55e; outline-offset: 2px; }
+    #reveal-message {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 2rem;
+      animation: fadeIn 0.5s ease;
+    }
+    #reveal-message.visible {
+      display: flex;
+      flex-direction: column;
+      text-align: center;
+    }
+    #reveal-message .message-text {
+      font-size: clamp(1.25rem, 4vw, 2rem);
+      max-width: 24rem;
+      line-height: 1.5;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  </style>
+</head>
+<body>
+  <h1>Solve the puzzle to reveal the message</h1>
+  <div class="game">
+    <div class="section">
+      <h2>Puzzle</h2>
+      <div class="grid grid-4" id="target-grid"></div>
+    </div>
+    <div class="section">
+      <h2>Pieces</h2>
+      <div class="pool-inner" id="pool" data-drop-zone="pool"></div>
+    </div>
+  </div>
+  <div id="reveal-message">
+    <p class="message-text"></p>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    const TILE_SIZE = 80;
+    const totalPieces = GRID_SIZE * GRID_SIZE;
+
+    let imageEl = null;
+    let slotContents = []; // index -> piece index or -1
+    let poolPieces = [];   // piece indices still in pool
+    let draggedPiece = null;
+    let draggedSlotIndex = null;
+    let dragEl = null;
+
+    const targetGrid = document.getElementById('target-grid');
+    const poolEl = document.getElementById('pool');
+    const revealEl = document.getElementById('reveal-message');
+
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    function rowCol(index) {
+      return { row: Math.floor(index / GRID_SIZE), col: index % GRID_SIZE };
+    }
+
+    function createTileEl(pieceIndex) {
+      const { row, col } = rowCol(pieceIndex);
+      const div = document.createElement('div');
+      div.className = 'tile';
+      div.dataset.pieceIndex = String(pieceIndex);
+      div.style.backgroundImage = imageEl ? `url(${imageEl.src})` : 'none';
+      div.style.backgroundPosition = `${-col * 100}% ${-row * 100}%`;
+      div.style.width = TILE_SIZE + 'px';
+      div.style.height = TILE_SIZE + 'px';
+      return div;
+    }
+
+    function renderTargetGrid() {
+      targetGrid.innerHTML = '';
+      targetGrid.style.width = (GRID_SIZE * TILE_SIZE + 8 + 8) + 'px';
+      targetGrid.style.height = (GRID_SIZE * TILE_SIZE + 8 + 8) + 'px';
+      for (let i = 0; i < totalPieces; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'slot';
+        slot.dataset.slotIndex = String(i);
+        if (slotContents[i] >= 0) {
+          const tile = createTileEl(slotContents[i]);
+          tile.dataset.slotIndex = String(i);
+          slot.appendChild(tile);
+        }
+        targetGrid.appendChild(slot);
+      }
+      attachGridListeners();
+    }
+
+    function renderPool() {
+      poolEl.innerHTML = '';
+      const cols = GRID_SIZE;
+      poolPieces.forEach((pieceIndex, i) => {
+        const tile = createTileEl(pieceIndex);
+        tile.dataset.inPool = '1';
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        tile.style.left = (col * (TILE_SIZE + 4) + 4) + 'px';
+        tile.style.top = (row * (TILE_SIZE + 4) + 4) + 'px';
+        poolEl.appendChild(tile);
+      });
+      attachPoolListeners();
+    }
+
+    function attachGridListeners() {
+      targetGrid.querySelectorAll('.slot').forEach(slot => {
+        slot.addEventListener('dragover', onDragOver);
+        slot.addEventListener('drop', onDropSlot);
+        slot.addEventListener('dragleave', onDragLeave);
+      });
+      targetGrid.querySelectorAll('.tile').forEach(tile => {
+        tile.setAttribute('draggable', 'true');
+        tile.addEventListener('dragstart', onDragStartTile);
+        tile.addEventListener('dragend', onDragEnd);
+      });
+    }
+
+    function attachPoolListeners() {
+      poolEl.querySelectorAll('.tile').forEach(tile => {
+        tile.setAttribute('draggable', 'true');
+        tile.addEventListener('dragstart', onDragStartPool);
+        tile.addEventListener('dragend', onDragEnd);
+      });
+    }
+
+    function onDragOver(e) {
+      e.preventDefault();
+      e.currentTarget.classList.add('drag-over');
+    }
+    function onDragLeave(e) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+
+    function onDropSlot(e) {
+      e.preventDefault();
+      e.currentTarget.classList.remove('drag-over');
+      const slotIndex = parseInt(e.currentTarget.dataset.slotIndex, 10);
+      if (draggedPiece === null) return;
+      if (draggedSlotIndex !== null) {
+        const prev = slotContents[slotIndex];
+        slotContents[draggedSlotIndex] = prev;
+      } else {
+        poolPieces = poolPieces.filter(p => p !== draggedPiece);
+      }
+      slotContents[slotIndex] = draggedPiece;
+      draggedPiece = null;
+      draggedSlotIndex = null;
+      poolEl.classList.remove('drag-over');
+      render();
+      checkComplete();
+    }
+
+    function onDropPool(e) {
+      e.preventDefault();
+      poolEl.classList.remove('drag-over');
+      if (draggedPiece === null) return;
+      if (draggedSlotIndex !== null) {
+        slotContents[draggedSlotIndex] = -1;
+      }
+      poolPieces.push(draggedPiece);
+      poolPieces.sort((a, b) => a - b);
+      draggedPiece = null;
+      draggedSlotIndex = null;
+      render();
+    }
+
+    function onDragStartTile(e) {
+      const tile = e.currentTarget;
+      const slotIndex = parseInt(tile.dataset.slotIndex, 10);
+      draggedPiece = slotContents[slotIndex];
+      draggedSlotIndex = slotIndex;
+      slotContents[slotIndex] = -1;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(draggedPiece));
+      tile.classList.add('dragging');
+      dragEl = tile;
+    }
+
+    function onDragStartPool(e) {
+      const tile = e.currentTarget;
+      draggedPiece = parseInt(tile.dataset.pieceIndex, 10);
+      draggedSlotIndex = null;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(draggedPiece));
+      tile.classList.add('dragging');
+      dragEl = tile;
+    }
+
+    function onDragEnd() {
+      if (dragEl) dragEl.classList.remove('dragging');
+      dragEl = null;
+      if (draggedSlotIndex !== null && draggedPiece !== null) {
+        slotContents[draggedSlotIndex] = draggedPiece;
+      }
+      draggedPiece = null;
+      draggedSlotIndex = null;
+      render();
+    }
+
+    function render() {
+      renderTargetGrid();
+      renderPool();
+    }
+
+    function checkComplete() {
+      if (poolPieces.length > 0) return;
+      for (let i = 0; i < totalPieces; i++) {
+        if (slotContents[i] !== i) return;
+      }
+      revealEl.classList.add('visible');
+      revealEl.querySelector('.message-text').textContent = REVEAL_MESSAGE;
+    }
+
+    function init() {
+      for (let i = 0; i < totalPieces; i++) slotContents[i] = -1;
+      poolPieces = shuffle(Array.from({ length: totalPieces }, (_, i) => i));
+
+      imageEl = new Image();
+      imageEl.crossOrigin = 'anonymous';
+      imageEl.onload = () => {
+        poolEl.addEventListener('dragover', (e) => { e.preventDefault(); poolEl.classList.add('drag-over'); });
+        poolEl.addEventListener('dragleave', () => poolEl.classList.remove('drag-over'));
+        poolEl.addEventListener('drop', onDropPool);
+        render();
+      };
+      imageEl.onerror = () => {
+        poolEl.innerHTML = '<p style="color:#f87171;">Failed to load image. Use a different URL or same-origin image.</p>';
+      };
+      imageEl.src = PUZZLE_IMAGE;
+    }
+
+    init();
+  </script>
+</body>
+</html>
